@@ -2,7 +2,7 @@
   "name": "token-trailers",
   "description": "AI cost tracking for Claude Code: token usage per commit as git trailers.",
   "owner": {
-    "name": "Sebastian Herden"
+    "name": "Y-Core Consulting GmbH"
   },
   "plugins": [
     {
