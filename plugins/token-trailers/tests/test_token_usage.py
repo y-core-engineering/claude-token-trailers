@@ -103,14 +103,18 @@ class TokenUsageTest(unittest.TestCase):
 
     def test_hook_denies_commit_without_trailers_and_names_values(self):
         for command in ('git commit -m "feat: x"', 'git add . && git commit -am "x"',
-                        'git -C /repo commit -q -m "$(cat <<EOF\nfix\nEOF\n)"'):
+                        'git -C /repo commit -q -m "$(cat <<EOF\nfix\nEOF\n)"',
+                        "git add . && git commit -q -F - <<'EOF'\nfix\nEOF", "git commit -qF- <<EOF\nfix\nEOF",
+                        'echo "fix" | git commit --file=-', 'echo "fix" | git commit --file -'):
             out = self.run_hook(command)
             self.assertEqual(out["permissionDecision"], "deny", command)
             self.assertIn("Tokens-Output: 42", out["permissionDecisionReason"])
 
     def test_hook_lets_everything_else_pass(self):
         for command in ('git commit -m "x\n\nTokens-Output: 5"', 'git commit -m "x $(token-usage.py)"',
-                        "git commit --amend --no-edit", "git commit -F msg.txt",
+                        "git commit --amend --no-edit", "git commit -F msg.txt", "git commit -F -msg.txt",
+                        "git commit -F - <<'EOF'\nx\n\nTokens-Output: 5\nEOF",
+                        "python3 token-usage.py | git commit -F -",
                         'grep -r "git commit -m" docs/', "git log --oneline"):
             self.assertIsNone(self.run_hook(command), command)
         self.assertIsNone(self.run_hook('git commit -m "x"', tool="Edit"))
