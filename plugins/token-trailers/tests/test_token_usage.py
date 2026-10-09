@@ -2,7 +2,9 @@
 
     python3 -B -m unittest discover -s plugins/token-trailers/tests
 """
+import csv
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -143,6 +145,145 @@ class TokenUsageTest(unittest.TestCase):
         out = json.loads(run.stdout)["hookSpecificOutput"]
         self.assertEqual(out["hookEventName"], "SessionStart")
         self.assertIn(os.path.abspath(SCRIPT), out["additionalContext"])
+
+
+VALUES = "Tokens-Input: 1\nTokens-Cache-Write: 2\nTokens-Cache-Read: 3\nTokens-Output: {}\nAI-Requests: 4\nAI-Model: m"
+
+
+class RepoTest(unittest.TestCase):
+    """--stats and --backfill against a real repository with synthetic transcripts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(self.repo)
+        self.env = dict(os.environ, CLAUDE_CONFIG_DIR=self.tmp.name, GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="A", GIT_AUTHOR_EMAIL="a@example.com",
+                        GIT_COMMITTER_NAME="A", GIT_COMMITTER_EMAIL="a@example.com")
+        self.env.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.git("init", "-q", "-b", "main")
+        self.dir = self.transcripts(self.git("rev-parse", "--show-toplevel"))
+
+    def transcripts(self, root):
+        path = os.path.join(self.tmp.name, "projects", "".join(c if c.isalnum() else "-" for c in root))
+        os.makedirs(path)
+        return path
+
+    def git(self, *args, minute=None):
+        env = self.env
+        if minute is not None:
+            when = f"2026-01-01T10:{minute:02d}:10Z"
+            env = dict(env, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+        run = subprocess.run(("git",) + args, cwd=self.repo, env=env, check=True, capture_output=True, text=True)
+        return run.stdout.strip()
+
+    def commit(self, minute, message):
+        self.git("commit", "-q", "--allow-empty", "-m", message, minute=minute)
+        return self.git("rev-parse", "HEAD")
+
+    def write(self, entries, directory=None):
+        with open(os.path.join(directory or self.dir, f"{SESSION}.jsonl"), "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(e) + "\n" for e in entries)
+
+    def script(self, *args, cwd=None, ok=True):
+        run = subprocess.run([sys.executable, "-B", SCRIPT, *args], cwd=cwd or self.repo, env=self.env,
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode == 0, ok, run.stderr)
+        return run.stdout if ok else run.stderr
+
+    def test_stats_reads_trailers_and_notes_and_lists_commits_without_values(self):
+        self.commit(1, "feat: a\n\nAI-Step: plan\n" + VALUES.format(10))
+        noted = self.commit(2, "feat: b")
+        self.git("notes", "add", "-m", "AI-Step: build\n" + VALUES.format(20), noted)
+        bare = self.commit(3, "feat: c")
+        self.write([assistant(SESSION, 1, "m1", [], output=50)])
+        out = self.script("--stats")
+        self.assertIn("with values 2 (trailers 1, notes 1), counted in another commit 0, without values 1", out)
+        self.assertIn("| plan | 1 | 2 | 3 | 10 | 4 | 0 |", out)
+        self.assertIn("| build | 1 | 2 | 3 | 20 | 4 | 0 |", out)
+        self.assertIn("| Total | 2 | 4 | 6 | 30 | 8 | 0 |", out)
+        self.assertIn(f"- {bare[:7]} 2026-01-01 feat: c", out)
+        self.assertIn("| Transcripts | 1 | 2 | 3 | 50 | 1 | 0 |", out)
+        self.assertIn("The transcripts are incomplete", out)
+        rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--csv"))))
+        self.assertEqual([row["source"] for row in rows], ["none", "note", "trailer"])
+        self.assertEqual([row["Tokens-Output"] for row in rows], ["0", "20", "10"])
+        self.assertEqual(rows[1]["step"], "build")
+
+    def test_stats_uses_transcripts_without_values_in_git_and_outside_a_repository(self):
+        entries = [assistant(SESSION, 1, "m1", [bash("t1", "ls")], output=5), assistant(OTHER, 2, "m2", [], output=7)]
+        self.commit(1, "feat: a")
+        self.write(entries)
+        out = self.script("--stats")
+        self.assertIn("Source: transcripts on this machine", out)
+        self.assertIn("| aaaa1111 | 1 | 2 | 3 | 5 | 1 | 1 |", out)
+        self.assertIn("| Total | 2 | 4 | 6 | 12 | 2 | 1 |", out)
+        plain = os.path.realpath(os.path.join(self.tmp.name, "plain"))
+        os.makedirs(plain)
+        self.write(entries, self.transcripts(plain))
+        rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--csv", cwd=plain))))
+        self.assertEqual([(row["session"], row["Tokens-Output"]) for row in rows],
+                         [("aaaa1111", "5"), ("bbbb2222", "7")])
+
+    def history(self):
+        """Three commits from two commit calls after one that Claude did not make."""
+        base = self.commit(0, "chore: base")
+        one = self.commit(5, "feat: one\n\nCo-Authored-By: C <c@example.com>")
+        two, three = self.commit(8, "feat: two"), self.commit(8, "feat: three")
+        call = 'git commit -m "x"'
+        self.write([assistant(SESSION, 1, "m1", []), assistant(SESSION, 2, "m2", []), assistant(SESSION, 3, "m3", []),
+                    assistant(SESSION, 5, "m5", [bash("t5", call)]), result(SESSION, 5, "t5"),
+                    assistant(SESSION, 6, "m6", [bash("t6", call)]), result(SESSION, 6, "t6", is_error=True),
+                    assistant(SESSION, 8, "m8", [bash("t8", call + " && " + call)]), result(SESSION, 8, "t8")])
+        return base, one, two, three
+
+    def test_backfill_proposes_values_from_the_commit_calls(self):
+        base, one, two, three = self.history()
+        out = self.script("--backfill")
+        blocks = {block.split(" ", 1)[0]: block for block in out.strip().split("\n\n")}
+        self.assertIn("no commit call found", blocks[base[:7]])
+        self.assertIn("AI-Window: 2026-01-01T10:01:00Z/2026-01-01T10:05:00Z", blocks[one[:7]])
+        self.assertIn("AI-Requests: 3", blocks[one[:7]])
+        self.assertIn("AI-Requests: 2", blocks[two[:7]])  # the request of the first commit and the failed one
+        self.assertIn(f"AI-Included-In: {two[:7]}", blocks[three[:7]])
+        self.assertIn("needs a name", self.script("--backfill", "--apply", "notes", ok=False))
+        self.assertEqual(self.git("rev-parse", "HEAD"), three)
+
+    def test_backfill_rewrites_messages_and_keeps_trees_and_dates(self):
+        base, one, two, three = self.history()
+        self.git("notes", "add", "-m", "keep me", three)
+        before = self.git("log", "--format=%T %aI %cI %s")
+        self.script("--backfill", "--apply", "rewrite", "--step", f"{one[:7]}=first", "--step", f"{two[:7]}=second")
+        self.assertEqual(self.git("log", "--format=%T %aI %cI %s"), before)
+        self.assertEqual(self.git("rev-parse", "HEAD~3"), base)
+        new_two = self.git("rev-parse", "--short=7", "HEAD~1")
+        lines = self.git("log", "-1", "--format=%(trailers:only)", "HEAD~2").split("\n")
+        self.assertEqual((lines[0], lines[-1]), ("AI-Step: first", "Co-Authored-By: C <c@example.com>"))
+        self.assertIn("AI-Requests: 3", lines)
+        self.assertIn("AI-Step: second\nAI-Window:", self.git("log", "-1", "--format=%B", "HEAD~1"))
+        self.assertEqual(self.git("log", "-1", "--format=%(trailers:only)"),
+                         f"AI-Step: second\nAI-Included-In: {new_two}")
+        self.assertEqual(self.git("notes", "show", "HEAD"), "keep me")
+        self.assertIn("with values 2 (trailers 2, notes 0), counted in another commit 1, without values 1",
+                      self.script("--stats"))
+
+    def test_backfill_attaches_notes_and_leaves_published_history_alone(self):
+        base, one, two, three = self.history()
+        self.git("update-ref", "refs/remotes/origin/main", three)
+        steps = ("--range", "HEAD", "--step", f"{one[:7]}=first", "--step", f"{two[:7]}=second")
+        self.assertIn("already on origin/main", self.script("--backfill", "--apply", "rewrite", *steps, ok=False))
+        self.script("--backfill", "--apply", "notes", *steps)
+        self.assertEqual(self.git("rev-parse", "HEAD"), three)
+        self.assertIn("AI-Step: first\nAI-Window:", self.git("notes", "show", one))
+        self.assertEqual(self.git("notes", "show", three), f"AI-Step: second\nAI-Included-In: {two[:7]}")
+        self.assertIn("No commits without values", self.script("--backfill", "--range", "HEAD~3..HEAD"))
+
+    def test_with_trailers_puts_lines_before_co_authored_by(self):
+        self.assertEqual(tu.with_trailers("s\n\nbody\n\nRefs: 1\nCo-Authored-By: C\n", ["A: 1", "B: 2"]),
+                         "s\n\nbody\n\nRefs: 1\nA: 1\nB: 2\nCo-Authored-By: C\n")
+        self.assertEqual(tu.with_trailers("s\n\nbody: text\nmore\n", ["A: 1"]), "s\n\nbody: text\nmore\n\nA: 1\n")
+        self.assertEqual(tu.with_trailers("subject: only\n", ["A: 1"]), "subject: only\n\nA: 1\n")
 
 
 if __name__ == "__main__":
