@@ -1,0 +1,29 @@
+{
+  "description": "Token trailers per commit: rule at session start, check before every git commit",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/token-usage.py\" --session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); case \"$input\" in *commit*) printf '%s' \"$input\" | python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/token-usage.py\" --hook ;; esac",
+            "timeout": 15,
+            "statusMessage": "Checking token trailers"
+          }
+        ]
+      }
+    ]
+  }
+}
