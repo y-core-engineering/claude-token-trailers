@@ -43,6 +43,30 @@ The plugin installs two hooks:
 
 The numbers come from the transcripts Claude Code stores under `~/.claude/projects/`. Counted is the own session including its subagents, from its last commit with trailers up to the current one. Parallel sessions in the same project do not mix.
 
+## Skills
+
+| Skill | Effect |
+|---|---|
+| `/token-trailers:stats` | Statistics of a project per work step, day and model. Reads the trailers and git notes of the commits. If git carries no values, or the directory is no repository, it evaluates the transcripts instead. |
+| `/token-trailers:backfill` | Adds values to commits that were made without them, for example before the plugin was installed. Proposes the values first, then writes them into the messages of an unmerged branch or attaches them as git notes. |
+
+Both run the same script and can be used without Claude:
+
+```
+python3 plugins/token-trailers/scripts/token-usage.py --stats
+python3 plugins/token-trailers/scripts/token-usage.py --stats --csv > token-usage.csv
+python3 plugins/token-trailers/scripts/token-usage.py --stats --source transcripts --csv
+python3 plugins/token-trailers/scripts/token-usage.py --backfill
+python3 plugins/token-trailers/scripts/token-usage.py --backfill --apply rewrite --step abc1234=architecture
+python3 plugins/token-trailers/scripts/token-usage.py --backfill --apply notes --range HEAD~20..HEAD --step abc1234=architecture
+```
+
+The CSV has one row per commit, in transcript mode one row per day, session and model. The four token classes stay in separate columns, so each can be multiplied with its own price in a spreadsheet.
+
+The report ends with a comparison against the transcripts on the machine. What they hold beyond the commits is work no commit carries.
+
+`--apply rewrite` changes the hashes of the rewritten commits and all later ones and drops their signatures. The script refuses it for commits on the remote default branch and for ranges with merge commits. It never pushes.
+
 ## Evaluating
 
 Single values per commit:
