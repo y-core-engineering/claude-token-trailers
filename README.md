@@ -19,6 +19,7 @@ feat(board): move cards with drag and drop
 AI-Step: story-2-3
 Tokens-Input: 286
 Tokens-Cache-Write: 1190990
+Tokens-Cache-Write-1h: 412300
 Tokens-Cache-Read: 25914175
 Tokens-Output: 66732
 AI-Requests: 124
@@ -29,6 +30,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
 
 The four token classes are kept apart because they are billed very differently. Cache reads usually make up most of the volume and the smallest share of the cost, so a single total would mislead.
+
+`Tokens-Cache-Write-1h` is not a fifth class. It names the part of `Tokens-Cache-Write` that was written with the 1-hour lifetime, which has its own price; the rest was written for 5 minutes. The line is missing when the transcripts do not say how the writes split.
 
 For tool calls only the name and count are recorded, never the input.
 
@@ -61,7 +64,7 @@ python3 plugins/token-trailers/scripts/token-usage.py --backfill --apply rewrite
 python3 plugins/token-trailers/scripts/token-usage.py --backfill --apply notes --range HEAD~20..HEAD --step abc1234=architecture
 ```
 
-The CSV has one row per commit, in transcript mode one row per day, session and model. The four token classes stay in separate columns, so each can be multiplied with its own price in a spreadsheet.
+The CSV has one row per commit, in transcript mode one row per day, session and model. The four token classes stay in separate columns, so each can be multiplied with its own price in a spreadsheet. The last column, `Tokens-Cache-Write-1h`, is the 1-hour share of the cache writes. It is empty where it is unknown, for example for commits made before version 0.3.0.
 
 The report ends with a comparison against the transcripts on the machine. What they hold beyond the commits is work no commit carries.
 

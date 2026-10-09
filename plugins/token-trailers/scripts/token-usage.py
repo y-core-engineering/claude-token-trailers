@@ -45,6 +45,9 @@ KEYS = (
     ("cache_read_input_tokens", "Tokens-Cache-Read"),
     ("output_tokens", "Tokens-Output"),
 )
+# Cache writes have two prices. The share with the 1-hour lifetime is a detail
+# of Tokens-Cache-Write, not a fifth class; the rest was written for 5 minutes.
+WRITE_1H = "Tokens-Cache-Write-1h"
 # `git commit` as a command of its own, also after &&, ; or | and with -C/-c before it.
 COMMIT_RE = re.compile(r"(?:^|[;&|(\n])\s*git(?:\s+-[cC]\s+\S+)*\s+commit\b")
 # A heredoc body is data for another command; a commit named in it is only text.
@@ -60,7 +63,7 @@ MARKERS = ("Tokens-Output:", "token-usage.py")
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 COLUMNS = tuple(name for _, name in KEYS) + ("AI-Requests", "AI-Tool-Calls")
 LOG_FORMAT = "%H%x1f%aI%x1f%cI%x1f%s%x1f%(trailers:only,unfold)%x1f%N%x1e"
-FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$", re.M)
+FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):[ \t]*(.*)$", re.M)
 # Git stores commit times in whole seconds, the transcripts in milliseconds.
 SLACK = timedelta(seconds=2)
 
@@ -150,8 +153,23 @@ def collect(directory, since, until, sessions):
     return seen, tools
 
 
+def write_1h(usages):
+    """Cache-write tokens with the 1-hour lifetime; None if a request does not say how its writes split."""
+    total = 0
+    for usage in usages:
+        detail = usage.get("cache_creation")
+        if isinstance(detail, dict):
+            total += detail.get("ephemeral_1h_input_tokens") or 0
+        elif usage.get("cache_creation_input_tokens"):
+            return None
+    return total
+
+
 def trailers(seen, tools):
     lines = [f"{name}: {sum(usage.get(key) or 0 for usage, _ in seen.values())}" for key, name in KEYS]
+    hour = write_1h(usage for usage, _ in seen.values())
+    if hour is not None:
+        lines.insert(2, f"{WRITE_1H}: {hour}")
     lines.append(f"AI-Requests: {len(seen)}")
     lines.append(f"AI-Model: {', '.join(sorted({model for _, model in seen.values() if model}))}")
     lines.append(f"AI-Tool-Calls: {len(tools)}")
@@ -245,7 +263,7 @@ def number(fields, name):
 
 def transcript_records(directory):
     """Usage of the transcripts, one record per day, session and model."""
-    seen, tools, records = {}, {}, {}
+    seen, tools, records, usages = {}, {}, {}, {}
     for entry in entries(directory):
         msg = entry["message"]
         if entry.get("type") != "assistant" or not msg.get("usage"):
@@ -263,6 +281,9 @@ def transcript_records(directory):
         for field, name in KEYS:
             record(key)[name] += usage.get(field) or 0
         record(key)["AI-Requests"] += 1
+        usages.setdefault(key, []).append(usage)
+    for key, group in usages.items():
+        records[key][WRITE_1H] = write_1h(group)
     for key in tools.values():
         record(key)["AI-Tool-Calls"] += 1
     return [records[key] for key in sorted(records)]
@@ -299,13 +320,17 @@ def stats(rev, source, as_csv):
                     "source": row["source"], "step": row["fields"].get("AI-Step", ""),
                     "included_in": row["fields"].get("AI-Included-In", ""),
                     "model": row["fields"].get("AI-Model", ""),
-                    **{name: number(row["fields"], name) for name in COLUMNS}} for row in rows]
+                    **{name: number(row["fields"], name) for name in COLUMNS},
+                    WRITE_1H: number(row["fields"], WRITE_1H) if WRITE_1H in row["fields"] else None}
+                   for row in rows]
     else:
         head, records = ("date", "session", "model"), logged
     if as_csv:
         out = csv.writer(sys.stdout, lineterminator="\n")
-        out.writerow(head + COLUMNS)
-        out.writerows([record[name] for name in head + COLUMNS] for record in records)
+        # The 1-hour share comes last and stays empty where it is unknown.
+        names = head + COLUMNS + (WRITE_1H,)
+        out.writerow(names)
+        out.writerows(["" if record[name] is None else record[name] for name in names] for record in records)
         return
 
     print(f"# Token usage\n\nProject: {os.getcwd()}")

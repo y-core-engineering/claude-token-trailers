@@ -22,9 +22,11 @@ SESSION, OTHER = "aaaa1111-0000-0000-0000-000000000000", "bbbb2222-0000-0000-000
 FAR = datetime(2100, 1, 1, tzinfo=timezone.utc)
 
 
-def assistant(session, minute, msg_id, blocks, output=10):
+def assistant(session, minute, msg_id, blocks, output=10, hour=None):
     usage = {"input_tokens": 1, "cache_creation_input_tokens": 2, "cache_read_input_tokens": 3,
              "output_tokens": output}
+    if hour is not None:  # how the two cache-write tokens split by lifetime
+        usage["cache_creation"] = {"ephemeral_5m_input_tokens": 2 - hour, "ephemeral_1h_input_tokens": hour}
     return {"type": "assistant", "sessionId": session, "timestamp": f"2026-01-01T10:{minute:02d}:00.000Z",
             "message": {"id": msg_id, "model": "claude-test", "usage": usage, "content": blocks}}
 
@@ -71,6 +73,15 @@ class TokenUsageTest(unittest.TestCase):
         self.write(f"{SESSION}.jsonl", [assistant(SESSION, 1, "m1", []), assistant(SESSION, 2, "m2", [])])
         got = self.trailers()
         self.assertEqual([got[k] for _, k in tu.KEYS], ["2", "4", "6", "20"])
+
+    def test_cache_write_names_its_one_hour_share_only_when_every_request_tells(self):
+        self.write(f"{SESSION}.jsonl", [assistant(SESSION, 1, "m1", [], hour=2), assistant(SESSION, 2, "m2", [], hour=0)])
+        lines = tu.trailers(*tu.collect(self.dir, tu.EPOCH, FAR, ()))
+        self.assertEqual(lines[1:3], ["Tokens-Cache-Write: 4", "Tokens-Cache-Write-1h: 2"])
+        self.write(f"{OTHER}.jsonl", [assistant(OTHER, 3, "o1", [])])
+        got = self.trailers()
+        self.assertEqual(got["Tokens-Cache-Write"], "6")
+        self.assertNotIn("Tokens-Cache-Write-1h", got)
 
     def test_subagents_count_and_session_filter_separates_parallel_sessions(self):
         self.write(f"{SESSION}.jsonl", [assistant(SESSION, 1, "m1", [])])
@@ -210,6 +221,19 @@ class RepoTest(unittest.TestCase):
         self.assertEqual([row["source"] for row in rows], ["none", "note", "trailer"])
         self.assertEqual([row["Tokens-Output"] for row in rows], ["0", "20", "10"])
         self.assertEqual(rows[1]["step"], "build")
+
+    def test_stats_csv_carries_the_one_hour_share_and_leaves_it_empty_where_unknown(self):
+        self.commit(1, "feat: a\n\nAI-Step: plan\n" + VALUES.format(10))
+        self.commit(2, "feat: b\n\nAI-Step: build\nTokens-Cache-Write-1h: 2\n" + VALUES.format(20))
+        self.write([assistant(SESSION, 1, "m1", [], hour=1), assistant(OTHER, 2, "m2", [])])
+        out = self.script("--stats")
+        self.assertIn("| build | 1 | 2 | 3 | 20 | 4 | 0 |", out)
+        self.assertNotIn("Cache-Write-1h", out)
+        rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--csv"))))
+        self.assertEqual([row["Tokens-Cache-Write-1h"] for row in rows], ["2", ""])
+        rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--source", "transcripts", "--csv"))))
+        self.assertEqual([(row["session"], row["Tokens-Cache-Write-1h"]) for row in rows],
+                         [("aaaa1111", "1"), ("bbbb2222", "")])
 
     def test_stats_uses_transcripts_without_values_in_git_and_outside_a_repository(self):
         entries = [assistant(SESSION, 1, "m1", [bash("t1", "ls")], output=5), assistant(OTHER, 2, "m2", [], output=7)]

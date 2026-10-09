@@ -31,7 +31,7 @@ python3 <script> --stats --range main..HEAD           # only these commits
 3. If commits have no values, say so and offer the `backfill` skill.
 4. Explain the last table. "Not attached" is work in the transcripts that no commit carries: orientation, abandoned attempts, sessions without a commit. If the script says the transcripts are incomplete, that row is missing and the difference cannot be stated.
 
-For costs, write the CSV and leave the prices to the user. The CSV keeps the token classes in separate columns so each can be multiplied with its own price. Do not state prices from memory.
+For costs, write the CSV and leave the prices to the user. The CSV keeps the token classes in separate columns so each can be multiplied with its own price. Its last column `Tokens-Cache-Write-1h` is the part of `Tokens-Cache-Write` written with the 1-hour lifetime, which is priced differently from the 5-minute rest. An empty cell means unknown, not zero; do not count it twice by adding it to `Tokens-Cache-Write`. Do not state prices from memory.
 
 ## Limits
 
