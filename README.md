@@ -5,7 +5,7 @@ A Claude Code plugin that records AI usage per commit. Every commit Claude creat
 ## Installation
 
 ```
-/plugin marketplace add swherden/claude-token-trailers
+/plugin marketplace add y-core-engineering/claude-token-trailers
 /plugin install token-trailers@token-trailers
 ```
 
