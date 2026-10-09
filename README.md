@@ -39,7 +39,7 @@ The plugin installs two hooks:
 | Hook | Effect |
 |---|---|
 | `SessionStart` | Hands Claude the rule and the path of the script that computes the values before a commit. |
-| `PreToolUse` on `Bash` | Checks every `git commit -m`. If the trailers are missing, the hook stops the commit and names the values. Claude repeats the commit with them. |
+| `PreToolUse` on `Bash` | Checks every `git commit -m` and `git commit -F -`. If the trailers are missing, the hook stops the commit and names the values. Claude repeats the commit with them. |
 
 The numbers come from the transcripts Claude Code stores under `~/.claude/projects/`. Counted is the own session including its subagents, from its last commit with trailers up to the current one. Parallel sessions in the same project do not mix.
 
@@ -61,7 +61,7 @@ python3 plugins/token-trailers/scripts/token-usage.py --since 2026-10-09T11:19:4
 ## Limits
 
 - Only commits Claude creates through the Bash tool are covered. Your own commits in a terminal do not pass the hook.
-- Only `git commit -m` is checked. With `--amend --no-edit` or `-F file` the message is not part of the command, so the hook lets these commits through.
+- Only `git commit -m` and `git commit -F -` (message on stdin, heredoc or pipe) are checked. With `--amend --no-edit` or `-F file` the message is not part of the command, so the hook lets these commits through.
 - The request that triggers a commit counts towards the following commit.
 - Work in a session that ends without a commit is attached to no commit. For an honest metric it belongs into the evaluation as overhead.
 - A squash merge drops the trailers of the individual commits.

@@ -86,10 +86,13 @@ class TokenUsageTest(unittest.TestCase):
             assistant(SESSION, 2, "m2", [bash("t2", commit)]), result(SESSION, 2, "t2", is_error=True),
             assistant(SESSION, 3, "m3", [bash("t3", 'git commit -m "no trailers"')]), result(SESSION, 3, "t3"),
             assistant(SESSION, 4, "m4", [bash("t4", commit)]),  # still running, no result yet
+            # a commit that is only text in a heredoc body does not move the window
+            assistant(SESSION, 5, "m5", [bash("t5", f"cat > test.py <<'EOF'\n{commit}\nEOF")]),
+            result(SESSION, 5, "t5"),
         ])
         since = tu.last_commit_ts(self.dir, SESSION)
         self.assertEqual(since, tu.parse_ts("2026-01-01T10:01:00Z"))
-        self.assertEqual(self.trailers(since, (SESSION,))["AI-Requests"], "4")
+        self.assertEqual(self.trailers(since, (SESSION,))["AI-Requests"], "5")
         self.assertEqual(tu.last_commit_ts(self.dir, OTHER), tu.EPOCH)
 
     def run_hook(self, command, tool="Bash", stdin=None):
@@ -103,14 +106,21 @@ class TokenUsageTest(unittest.TestCase):
 
     def test_hook_denies_commit_without_trailers_and_names_values(self):
         for command in ('git commit -m "feat: x"', 'git add . && git commit -am "x"',
-                        'git -C /repo commit -q -m "$(cat <<EOF\nfix\nEOF\n)"'):
+                        'git -C /repo commit -q -m "$(cat <<EOF\nfix\nEOF\n)"',
+                        "git add . && git commit -q -F - <<'EOF'\nfix\nEOF", "git commit -qF- <<EOF\nfix\nEOF",
+                        'echo "fix" | git commit --file=-', 'echo "fix" | git commit --file -',
+                        "cat > f <<EOF && git commit -m x\ndata\nEOF",
+                        "cat > f <<EOF\ndata\nEOF\ngit commit -m x"):
             out = self.run_hook(command)
             self.assertEqual(out["permissionDecision"], "deny", command)
             self.assertIn("Tokens-Output: 42", out["permissionDecisionReason"])
 
     def test_hook_lets_everything_else_pass(self):
         for command in ('git commit -m "x\n\nTokens-Output: 5"', 'git commit -m "x $(token-usage.py)"',
-                        "git commit --amend --no-edit", "git commit -F msg.txt",
+                        "git commit --amend --no-edit", "git commit -F msg.txt", "git commit -F -msg.txt",
+                        "git commit -F - <<'EOF'\nx\n\nTokens-Output: 5\nEOF",
+                        "python3 token-usage.py | git commit -F -",
+                        "cat > test.py <<'EOF'\ngit add . && git commit -m \"x\"\nEOF",
                         'grep -r "git commit -m" docs/', "git log --oneline"):
             self.assertIsNone(self.run_hook(command), command)
         self.assertIsNone(self.run_hook('git commit -m "x"', tool="Edit"))

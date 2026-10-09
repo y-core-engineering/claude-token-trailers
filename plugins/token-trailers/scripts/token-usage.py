@@ -34,8 +34,14 @@ KEYS = (
 )
 # `git commit` as a command of its own, also after &&, ; or | and with -C/-c before it.
 COMMIT_RE = re.compile(r"(?:^|[;&|(\n])\s*git(?:\s+-[cC]\s+\S+)*\s+commit\b")
-# Only commits whose message is part of the command can be checked.
-MESSAGE_RE = re.compile(r"\s(?:-[a-zA-Z]*m|--message)\b")
+# A heredoc body is data for another command; a commit named in it is only text.
+HEREDOC_RE = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?^[ \t]*\3[ \t]*$", re.S | re.M)
+# Only commits whose message is part of the command can be checked: -m, or
+# -F - with the message on stdin (heredoc or pipe).
+MESSAGE_RE = re.compile(
+    r"\s(?:-[a-zA-Z]*m|--message)\b"
+    r"|\s(?:-[a-zA-Z]*F\s*|--file[=\s]\s*)-(?=[\s<;&|)]|$)"
+)
 # Trailers are written out in the command or inserted by calling this script.
 MARKERS = ("Tokens-Output:", "token-usage.py")
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -80,8 +86,12 @@ def blocks(entry, kind):
     return [b for b in content if b.get("type") == kind] if isinstance(content, list) else []
 
 
+def is_commit(command):
+    return bool(COMMIT_RE.search(HEREDOC_RE.sub(r"\1", command)))
+
+
 def is_trailered_commit(command):
-    return bool(COMMIT_RE.search(command)) and any(m in command for m in MARKERS)
+    return is_commit(command) and any(m in command for m in MARKERS)
 
 
 def last_commit_ts(directory, session):
@@ -135,7 +145,7 @@ def trailers(seen, tools):
 def hook():
     data = json.load(sys.stdin)
     command = (data.get("tool_input") or {}).get("command", "")
-    if data.get("tool_name") != "Bash" or not COMMIT_RE.search(command):
+    if data.get("tool_name") != "Bash" or not is_commit(command):
         return
     if not MESSAGE_RE.search(command) or any(m in command for m in MARKERS):
         return
@@ -165,8 +175,8 @@ def session_start():
         "session since its last commit) and append the output unchanged at the end of the "
         "commit message, before Co-Authored-By. Add `AI-Step: <short name of the work step>` "
         "in front of it. Never add the four token classes up into one number. A hook stops "
-        "`git commit -m` without these trailers and names the values; repeat the commit with "
-        "the lines it gives you."
+        "`git commit -m` and `git commit -F -` without these trailers and names the values; "
+        "repeat the commit with the lines it gives you."
     )
     json.dump({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": rule}},
               sys.stdout, ensure_ascii=False)

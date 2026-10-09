@@ -1,6 +1,6 @@
 {
   "name": "token-trailers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Records token usage and tool calls per commit as git trailers. A hook stops commits without these trailers and names the values.",
   "author": {
     "name": "Sebastian Herden"
