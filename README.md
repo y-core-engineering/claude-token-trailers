@@ -46,6 +46,8 @@ The plugin installs two hooks:
 
 The numbers come from the transcripts Claude Code stores under `~/.claude/projects/`. Counted is the own session including its subagents, from its last commit with trailers up to the current one. Parallel sessions in the same project do not mix.
 
+The script finds the start of the window in two ways. It looks for the last commit call with trailers in the session, and it remembers the values it handed out in `.git/token-trailers/<session>.json`. Once a commit carries those values, the next window starts where that one ended. The second way also covers commits a wrapper script makes, where the session only shows `sh commit.sh` and no `git commit`.
+
 ## Skills
 
 | Skill | Effect |
@@ -68,6 +70,8 @@ The CSV has one row per commit, in transcript mode one row per day, session and 
 
 The report ends with a comparison against the transcripts on the machine. What they hold beyond the commits is work no commit carries.
 
+A git note with values overrides the trailers of its commit. This corrects wrong values on published history without rewriting it: `git notes add -m "<the corrected lines>" <commit>`, then `git push origin refs/notes/commits`.
+
 `--apply rewrite` changes the hashes of the rewritten commits and all later ones and drops their signatures. The script refuses it for commits on the remote default branch and for ranges with merge commits. It never pushes.
 
 ## Evaluating
@@ -89,6 +93,7 @@ python3 plugins/token-trailers/scripts/token-usage.py --since 2026-10-09T11:19:4
 
 - Only commits Claude creates through the Bash tool are covered. Your own commits in a terminal do not pass the hook.
 - Only `git commit -m` and `git commit -F -` (message on stdin, heredoc or pipe) are checked. With `--amend --no-edit` or `-F file` the message is not part of the command, so the hook lets these commits through.
+- A commit made through a wrapper script is not checked by the hook, because the command shows no `git commit`. If the wrapper calls the script for the values, the window still moves with the commit. If it writes the trailers some other way, or the commit is squashed afterwards, the window stays and the next commit counts that work again.
 - The request that triggers a commit counts towards the following commit.
 - Work in a session that ends without a commit is attached to no commit. For an honest metric it belongs into the evaluation as overhead.
 - A squash merge drops the trailers of the individual commits.

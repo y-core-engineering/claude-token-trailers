@@ -19,7 +19,7 @@ python3 <script> --stats --range main..HEAD           # only these commits
 | Source | Used when | Holds |
 |---|---|---|
 | Trailers in the commit messages | the commits carry them | permanent, the same for everyone with the repository |
-| Git notes | a commit has no trailers but a note | permanent, but only after `git fetch origin 'refs/notes/*:refs/notes/*'` |
+| Git notes | a commit has a note with values; it overrides the trailers | permanent, but only after `git fetch origin 'refs/notes/*:refs/notes/*'` |
 | Transcripts under `~/.claude/projects/` | git carries no values, or there is no repository | only this machine, only until Claude Code cleans them up |
 
 `--source auto` is the default: git if at least one commit carries values, transcripts otherwise. Fetch the notes first if the remote has some, otherwise those commits count as without values.
@@ -29,7 +29,7 @@ python3 <script> --stats --range main..HEAD           # only these commits
 1. Run the report and show the tables unchanged. Do not add the four token classes up into one number; they cost differently.
 2. Name the coverage line: how many commits carry values, how many are counted in another commit, how many have none.
 3. If commits have no values, say so and offer the `backfill` skill.
-4. Explain the last table. "Not attached" is work in the transcripts that no commit carries: orientation, abandoned attempts, sessions without a commit. If the script says the transcripts are incomplete, that row is missing and the difference cannot be stated.
+4. Explain the last table. "Not attached" is work in the transcripts that no commit carries: orientation, abandoned attempts, sessions without a commit. If the commits carry more than the transcripts hold, that row is missing and the difference cannot be stated. Then check the per-commit values in the CSV before blaming the transcripts: values that only rise from commit to commit within a day are running totals, not the usage of each commit. The usage of each commit is then the difference to the one before, and a git note with the corrected lines overrides the trailers.
 
 For costs, write the CSV and leave the prices to the user. The CSV keeps the token classes in separate columns so each can be multiplied with its own price. Its last column `Tokens-Cache-Write-1h` is the part of `Tokens-Cache-Write` written with the 1-hour lifetime, which is priced differently from the 5-minute rest. An empty cell means unknown, not zero; do not count it twice by adding it to `Tokens-Cache-Write`. Do not state prices from memory.
 
