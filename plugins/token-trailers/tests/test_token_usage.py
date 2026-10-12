@@ -216,7 +216,7 @@ class RepoTest(unittest.TestCase):
         self.assertIn("| Total | 2 | 4 | 6 | 30 | 8 | 0 |", out)
         self.assertIn(f"- {bare[:7]} 2026-01-01 feat: c", out)
         self.assertIn("| Transcripts | 1 | 2 | 3 | 50 | 1 | 0 |", out)
-        self.assertIn("The transcripts are incomplete", out)
+        self.assertIn("the transcripts are incomplete", out)
         rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--csv"))))
         self.assertEqual([row["source"] for row in rows], ["none", "note", "trailer"])
         self.assertEqual([row["Tokens-Output"] for row in rows], ["0", "20", "10"])
@@ -234,6 +234,32 @@ class RepoTest(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--source", "transcripts", "--csv"))))
         self.assertEqual([(row["session"], row["Tokens-Cache-Write-1h"]) for row in rows],
                          [("aaaa1111", "1"), ("bbbb2222", "")])
+
+    def test_note_with_values_overrides_the_trailers_of_its_commit(self):
+        wrong = self.commit(1, "feat: a\n\nAI-Step: plan\n" + VALUES.format(900))
+        self.git("notes", "add", "-m", "AI-Step: plan\n" + VALUES.format(9), wrong)
+        self.assertIn("| plan | 1 | 2 | 3 | 9 | 4 | 0 |", self.script("--stats"))
+        rows = list(csv.DictReader(io.StringIO(self.script("--stats", "--csv"))))
+        self.assertEqual([(row["source"], row["Tokens-Output"]) for row in rows], [("note", "9")])
+
+    def test_window_moves_with_a_commit_that_no_bash_call_shows(self):
+        """A wrapper script commits; the session only shows `sh commit.sh`."""
+        def handout(minute):
+            return self.script("--session", SESSION, "--until", f"2026-01-01T10:{minute:02d}:30Z").strip()
+
+        self.write([assistant(SESSION, 1, "m1", [bash("t1", "sh commit.sh")], output=5)])
+        first = handout(1)
+        self.assertIn("AI-Requests: 1", first)
+        self.write([assistant(SESSION, 1, "m1", [], output=5), assistant(SESSION, 2, "m2", [], output=7)])
+        # handed out but not committed: the window stays
+        self.assertIn("AI-Requests: 2", handout(2))
+        self.commit(3, "feat: a\n\nAI-Step: build\n" + first)
+        self.write([assistant(SESSION, 1, "m1", [], output=5), assistant(SESSION, 2, "m2", [], output=7),
+                    assistant(SESSION, 4, "m4", [], output=11)])
+        second = handout(4)
+        self.assertIn("AI-Requests: 2", second)
+        self.assertIn("Tokens-Output: 18", second)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, ".git", "token-trailers", f"{SESSION}.json")))
 
     def test_stats_uses_transcripts_without_values_in_git_and_outside_a_repository(self):
         entries = [assistant(SESSION, 1, "m1", [bash("t1", "ls")], output=5), assistant(OTHER, 2, "m2", [], output=7)]

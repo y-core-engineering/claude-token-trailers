@@ -14,6 +14,10 @@ all sessions of the project are counted unless --session narrows them down
 (ID or its prefix, repeatable). Subagents count towards their session.
 Timestamps without a time zone are read as UTC.
 
+The values handed out are remembered in the git directory. Once a commit
+carries them, the next window starts where that one ended, however the commit
+was made.
+
 As a hook the script stops a `git commit -m` that lacks token trailers and
 names the values to repeat the commit with. On any error it lets the commit
 through, so the measurement never blocks the work.
@@ -178,6 +182,52 @@ def trailers(seen, tools):
     return lines
 
 
+def fingerprint(fields):
+    return [number(fields, name) for name in COLUMNS]
+
+
+def handouts_path(session):
+    """File in the git directory that remembers the values handed to this session; None outside a repository."""
+    try:
+        common = git("rev-parse", "--git-common-dir").strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return os.path.join(os.path.abspath(common), "token-trailers", f"{session}.json")
+
+
+def handed_out(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return [h for h in data if isinstance(h, dict) and "until" in h and "values" in h] if isinstance(data, list) else []
+
+
+def confirmed_ts(handouts):
+    """End of the newest window whose values a commit carries, however that commit was made."""
+    # A commit made through a wrapper script does not show in the Bash calls
+    # of the session, so the commits themselves are asked.
+    if not handouts:
+        return EPOCH
+    try:
+        log = git("log", "--all", "-n", "500", "--format=%(trailers:only,unfold)%x1e")
+    except (OSError, subprocess.CalledProcessError):
+        return EPOCH
+    carried = [fingerprint(dict(FIELD_RE.findall(text))) for text in log.split("\x1e")]
+    return max((parse_ts(h["until"]) for h in handouts if h["values"] in carried), default=EPOCH)
+
+
+def remember(path, handouts, until, lines):
+    entry = {"until": until.isoformat(), "values": fingerprint(dict(line.split(": ", 1) for line in lines))}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(handouts[-49:] + [entry], fh)
+    except OSError:
+        pass  # without the file the window falls back to the commit calls of the session
+
+
 def hook():
     data = json.load(sys.stdin)
     command = (data.get("tool_input") or {}).get("command", "")
@@ -243,7 +293,8 @@ def commits(rev):
     rows = []
     for record in filter(str.strip, log.split("\x1e")):
         sha, author, committer, subject, trailer, note = record.strip("\n").split("\x1f")
-        for source, text in (("trailer", trailer), ("note", note)):
+        # A note with values overrides the trailers: it corrects published commits without rewriting them.
+        for source, text in (("note", note), ("trailer", trailer)):
             fields = dict(FIELD_RE.findall(text))
             if "Tokens-Output" in fields or "AI-Included-In" in fields:
                 break
@@ -368,8 +419,9 @@ def stats(rev, source, as_csv):
             lines.append(("Not attached", rest))
         print("\n".join(table("", lines)))
         if min(rest.values()) < 0:
-            print("The commits carry more than the transcripts hold. The transcripts are incomplete: "
-                  "cleaned up, or the work ran on another machine or in another project directory.")
+            print("The commits carry more than the transcripts hold. Either the transcripts are incomplete "
+                  "(cleaned up, or the work ran on another machine or in another project directory), "
+                  "or commits carry the same work more than once.")
 
 
 def commit_calls(directory):
@@ -534,11 +586,16 @@ def main():
         if len(sessions) != 1:
             sys.exit("Without --since exactly one session is needed (CLAUDE_CODE_SESSION_ID or --session).")
         directory = project_dir(sessions[0])
-        since = last_commit_ts(directory, sessions[0])
+        path = handouts_path(sessions[0])
+        handouts = handed_out(path) if path else []
+        since = max(last_commit_ts(directory, sessions[0]), confirmed_ts(handouts))
     seen, tools = collect(directory, since, until, sessions)
     if not seen:
         sys.exit(f"No requests found between {since.isoformat()} and {until.isoformat()}.")
-    print("\n".join(trailers(seen, tools)))
+    lines = trailers(seen, tools)
+    if not args.since and path:
+        remember(path, handouts, until, lines)
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
